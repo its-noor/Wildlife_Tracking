@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<meta charset="utf-8" />
+<head>
+  <title>Wildlife Trafficking Incidents by Country</title>
+
+  <script type="text/javascript" src="../lib/d3.v5.min.js"></script>
+  <script type="text/javascript" src="../lib/d3-tip.min.js"></script>
+  <script type="text/javascript" src="../lib/d3-geo-projection.v2.min.js"></script>
+  <script type="text/javascript" src="../lib/d3-legend.min.js"></script>
+  <script type="text/javascript" src="../lib/topojson.v2.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 16px;
+      background: #ffffff;
+      color: #111;
+    }
+
+    #title {
+      margin: 0 0 10px 0;
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    .controls {
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+
+    #year {
+      font-size: 14px;
+      padding: 3px 6px;
+    }
+
+    #choropleth {
+      border: 0;
+    }
+
+    #countries path {
+      stroke: #ffffff;
+      stroke-width: 0.5px;
+    }
+
+    #tooltip {
+      position: absolute;
+      display: none;
+      pointer-events: none;
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid #aaa;
+      border-radius: 4px;
+      padding: 8px;
+      font-size: 12px;
+      line-height: 1.35;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+      min-width: 190px;
+    }
+
+    #legend text {
+      font-size: 11px;
+      fill: #111;
+    }
+
+    #credit {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #444;
+    }
+  </style>
+</head>
+
+<body>
+  <h1 id="title">Wildlife Trafficking Incidents by Country</h1>
+
+  <div class="controls">
+    <label for="yearDropdown">Year: </label>
+    <select id="yearDropdown"></select>
+  </div>
+
+  <svg id="choropleth"></svg>
+  <div id="tooltip"></div>
+  <div id="credit">anoor46</div>
+
+  <script>
+    var margin = { top: 10, right: 20, bottom: 20, left: 20 };
+    var width = 1100 - margin.left - margin.right;
+    var height = 620 - margin.top - margin.bottom;
+
+    var svg = d3.select("#choropleth")
+      .attr("width", width + margin.left + margin.right)
+      .attr("height", height + margin.top + margin.bottom);
+
+    var mapG = svg.append("g")
+      .attr("id", "map")
+      .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+    var countriesG = mapG.append("g").attr("id", "countries");
+    var legendG = mapG.append("g").attr("id", "legend");
+
+    var colorScale = d3.scaleQuantile()
+      .range(["#fee8c8", "#fdbb84", "#e34a33", "#b30000"]);
+
+    var tooltip = d3.select("#tooltip");
+
+    var projection = d3.geoNaturalEarth1()
+      .scale(175)
+      .translate([width / 2 - 70, height / 2 + 28]);
+
+    var path = d3.geoPath().projection(projection);
+
+    var countryAlias = {
+      "united states": "united states of america",
+      "russia": "russian federation",
+      "vietnam": "viet nam",
+      "south korea": "republic of korea",
+      "north korea": "democratic people's republic of korea",
+      "iran": "iran (islamic republic of)",
+      "syria": "syrian arab republic",
+      "venezuela": "venezuela (bolivarian republic of)",
+      "tanzania": "tanzania, united republic of",
+      "moldova": "moldova, republic of",
+      "laos": "lao people's democratic republic",
+      "cape verde": "cabo verde",
+      "bolivia": "bolivia (plurinational state of)",
+      "czech republic": "czechia",
+      "swaziland": "eswatini",
+      "burma": "myanmar",
+      "north macedonia": "the former yugoslav republic of macedonia"
+    };
+
+    function normalizeCountryName(name) {
+      if (!name) return "";
+      var key = name.toLowerCase().trim();
+      key = key.replace(/&/g, "and").replace(/\./g, "").replace(/\s+/g, " ");
+      return countryAlias[key] ? countryAlias[key] : key;
+    }
+
+    function formatNumberOrNA(value, digits) {
+      if (value == null || value === "" || isNaN(value)) return "N/A";
+      return d3.format("." + digits + "f")(+value);
+    }
+
+    Promise.all([
+      d3.json("data/world_countries.json"),
+      d3.csv("data/wildlife_trafficking.csv", function(d) {
+        return {
+          Year: +d.Year,
+          Country: d["Country of Incident"],
+          Number_of_Incidents: +d.Number_of_Incidents,
+          Average_Fine: d.Average_Fine === "" ? null : +d.Average_Fine,
+          Average_Imprisonment: d.Average_Imprisonment === "" ? null : +d.Average_Imprisonment
+        };
+      })
+    ]).then(function(values) {
+      ready(null, values[0], values[1]);
+    }).catch(function(error) {
+      ready(error, null, null);
+    });
+
+    function ready(error, world, traffickingData) {
+      if (error) {
+        console.error(error);
+        return;
+      }
+
+      var years = Array.from(new Set(traffickingData.map(function(d) { return d.Year; })))
+        .sort(d3.ascending);
+
+      var dropdown = d3.select("#yearDropdown");
+      dropdown.selectAll("option")
+        .data(years)
+        .enter()
+        .append("option")
+        .attr("value", function(d) { return d; })
+        .text(function(d) { return d; });
+
+      dropdown.on("change", function() {
+        var selectedYear = +this.value;
+        createMapAndLegend(world, traffickingData, selectedYear);
+      });
+
+      createMapAndLegend(world, traffickingData, years[0]);
+    }
+
+    function createMapAndLegend(world, traffickingData, selectedYear) {
+      var features;
+      if (world.features) {
+        features = world.features;
+      } else {
+        var objectKey = Object.keys(world.objects)[0];
+        features = topojson.feature(world, world.objects[objectKey]).features;
+      }
+
+      var filtered = traffickingData.filter(function(d) {
+        return d.Year === +selectedYear;
+      });
+
+      var incidentsByCountry = {};
+      filtered.forEach(function(d) {
+        incidentsByCountry[normalizeCountryName(d.Country)] = d;
+      });
+
+      var incidentValues = filtered
+        .map(function(d) { return d.Number_of_Incidents; })
+        .filter(function(v) { return v != null && !isNaN(v); });
+
+      colorScale.domain(incidentValues);
+
+      var noDataColor = "#808080";
+
+      var countryPaths = countriesG.selectAll("path")
+        .data(features, function(d) { return d.id || d.properties.name; });
+
+      countryPaths.enter()
+        .append("path")
+        .merge(countryPaths)
+        .attr("class", "country")
+        .attr("name", function(d) { return d.properties.name; })
+        .attr("d", path)
+        .attr("fill", function(d) {
+          var key = normalizeCountryName(d.properties.name);
+          var row = incidentsByCountry[key];
+          return row ? colorScale(row.Number_of_Incidents) : noDataColor;
+        })
+        .on("mouseover", function(a, b) {
+          var d = (b && b.properties) ? b : a;
+          var key = normalizeCountryName(d.properties.name);
+          var row = incidentsByCountry[key];
+
+          tooltip.style("display", "block")
+            .html(
+              "<strong>Country:</strong> " + d.properties.name + "<br/>" +
+              "<strong>Year:</strong> " + selectedYear + "<br/>" +
+              "<strong>Number of incidents:</strong> " + (row ? d3.format(",d")(row.Number_of_Incidents) : "N/A") + "<br/>" +
+              "<strong>Average fine:</strong> " + (row ? formatNumberOrNA(row.Average_Fine, 2) : "N/A") + "<br/>" +
+              "<strong>Average imprisonment (years):</strong> " + (row ? formatNumberOrNA(row.Average_Imprisonment, 2) : "N/A")
+            );
+        })
+        .on("mousemove", function() {
+          tooltip
+            .style("left", (d3.event.pageX + 12) + "px")
+            .style("top", (d3.event.pageY - 28) + "px");
+        })
+        .on("mouseout", function() {
+          tooltip.style("display", "none");
+        });
+
+      countryPaths.exit().remove();
+
+      legendG.selectAll("*").remove();
+
+      var legendX = width - 140;
+      var legendY = 70;
+      var boxW = 22;
+      var boxH = 14;
+
+      var thresholds = colorScale.quantiles();
+      var legendData = colorScale.range().map(function(color, i) {
+        var minVal = (i === 0) ? d3.min(incidentValues) : thresholds[i - 1];
+        var maxVal = (i === thresholds.length) ? d3.max(incidentValues) : thresholds[i];
+        return { color: color, min: minVal, max: maxVal };
+      });
+
+      legendG.append("text")
+        .attr("x", legendX)
+        .attr("y", legendY - 10)
+        .style("font-weight", "bold")
+        .text("Number of incidents");
+
+      var cells = legendG.selectAll("g.legend-cell")
+        .data(legendData)
+        .enter()
+        .append("g")
+        .attr("class", "legend-cell")
+        .attr("transform", function(d, i) {
+          return "translate(" + legendX + "," + (legendY + i * (boxH + 6)) + ")";
+        });
+
+      cells.append("rect")
+        .attr("width", boxW)
+        .attr("height", boxH)
+        .attr("fill", function(d) { return d.color; })
+        .attr("stroke", "#666")
+        .attr("stroke-width", 0.4);
+
+      cells.append("text")
+        .attr("x", boxW + 8)
+        .attr("y", boxH - 2)
+        .text(function(d) {
+          return d3.format(",.0f")(d.min) + " - " + d3.format(",.0f")(d.max);
+        });
+    }
+  </script>
+</body>
+</html>
